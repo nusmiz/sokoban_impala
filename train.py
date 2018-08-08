@@ -30,13 +30,15 @@ def calc_vs_and_pg_advantages(states, actions, rewards, behaviour_policy, data_s
         prev_data_size = data_sizes[-1]
         prev_value = model.v(states[t_max][:prev_data_size])
         prev_v = prev_value
-        sum_delta = 0
+        sum_delta = torch.zeros(prev_data_size, 1).to(device)
         for i in reversed(range(0, t_max)):
             data_size = data_sizes[i]
             if prev_data_size != data_size:
                 prev_value = torch.cat((prev_value, torch.zeros(
                     data_size - prev_data_size, 1).to(device)), 0)
                 prev_v = torch.cat((prev_v, torch.zeros(
+                    data_size - prev_data_size, 1).to(device)), 0)
+                sum_delta = torch.cat((sum_delta, torch.zeros(
                     data_size - prev_data_size, 1).to(device)), 0)
             pi, value = model.forward(states[i][:data_size])
             probs = F.softmax(pi, dim=1)
@@ -101,11 +103,11 @@ def load_model(index):
     optimizer.load_state_dict(torch.load(model_dir / "optimizer.pth"))
 
 
-device = torch.device("cpu")
+device = torch.device("cuda")
 model = models.A3CModel().to(device)
 optimizer = optim.SGD(model.parameters(), lr=0.003)
 
 gamma = 0.99
 log_epsilon = torch.Tensor([math.log(1e-6)]).to(device)
-clip_rho_threshold = torch.Tensor([math.log(1.0)]).to(device)
+clip_rho_threshold = torch.Tensor([1.0]).to(device)
 beta = 1e-3
