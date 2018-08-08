@@ -6,6 +6,7 @@
 * cmake (>=3.10)
 * boost (>=1.65)
 * python (>=3.6)
+* pytorch (>=0.4)
 
 ## How to compile
 
