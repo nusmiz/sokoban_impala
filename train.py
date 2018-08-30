@@ -15,19 +15,19 @@ def predict_func(states):
         pi = model.pi(states)
         probs = F.softmax(pi, dim=1)
         actions = probs.multinomial(1)
-        policy = probs.gather(1, actions)
+        policies = probs.gather(1, actions)
         actions = np.squeeze(actions.cpu().numpy(), axis=1)
-        policy = np.squeeze(policy.cpu().numpy(), axis=1)
-        return actions, policy
+        policies = np.squeeze(policies.cpu().numpy(), axis=1)
+        return actions, policies
 
 
-def calc_vs_and_pg_advantages(states, actions, rewards, behaviour_policy, data_sizes):
+def calc_vs_and_pg_advantages(states, actions, rewards, behaviour_policies, data_sizes):
     t_max = len(data_sizes) - 1
     model.eval()
     vs_list = []
     pg_advantage_list = []
     with torch.no_grad():
-        prev_data_size = data_sizes[-1]
+        prev_data_size = data_sizes[t_max]
         prev_value = model.v(states[t_max][:prev_data_size])
         prev_v = prev_value
         sum_delta = torch.zeros(prev_data_size, 1).to(device)
@@ -43,7 +43,7 @@ def calc_vs_and_pg_advantages(states, actions, rewards, behaviour_policy, data_s
             pi, value = model.forward(states[i][:data_size])
             probs = F.softmax(pi, dim=1)
             target_policy = probs.gather(1, actions[i][:data_size])
-            rho = target_policy / behaviour_policy[i][:data_size]
+            rho = target_policy / behaviour_policies[i][:data_size]
             rho = torch.min(rho, clip_rho_threshold)
             delta = rho * (rewards[i][:data_size] + gamma * prev_value - value)
             sum_delta = delta + gamma * rho * sum_delta
@@ -69,17 +69,17 @@ def calc_loss(states, actions, vs, pg_advantages, data_sizes):
         probs = F.softmax(pi, dim=1)
         pi_loss += -(torch.max(F.log_softmax(pi, 1).gather(1, actions[i][:data_size]),
                                log_epsilon) * pg_advantages[i]).sum()
-        entropy_loss += (torch.max(F.log_softmax(pi, 1), log_epsilon) * probs).sum(1).sum()
+        entropy_loss += (torch.max(F.log_softmax(pi, 1), log_epsilon) * probs).sum()
     return v_loss / num_of_data, pi_loss / num_of_data, entropy_loss / num_of_data
 
 
-def train_func(states, actions, rewards, behaviour_policy, data_sizes):
-    states = torch.from_numpy(states.reshape(len(data_sizes), -1, 3, 80, 80)).to(device)
+def train_func(states, actions, rewards, behaviour_policies, data_sizes):
+    states = torch.from_numpy(states).to(device)
     actions = torch.from_numpy(actions).to(device)
     rewards = torch.from_numpy(rewards).to(device)
-    behaviour_policy = torch.from_numpy(behaviour_policy).to(device)
+    behaviour_policies = torch.from_numpy(behaviour_policies).to(device)
     vs, pg_advantages = calc_vs_and_pg_advantages(
-        states, actions, rewards, behaviour_policy, data_sizes)
+        states, actions, rewards, behaviour_policies, data_sizes)
     model.train()
     optimizer.zero_grad()
     v_loss, pi_loss, entropy_loss = calc_loss(states, actions, vs, pg_advantages, data_sizes[:-1])
@@ -98,7 +98,6 @@ def save_model(index):
 
 def load_model(index):
     model_dir = Path(f"output/{index}").resolve()
-    model_dir.mkdir(parents=True, exist_ok=True)
     model.load_state_dict(torch.load(model_dir / "model.pth"))
     optimizer.load_state_dict(torch.load(model_dir / "optimizer.pth"))
 

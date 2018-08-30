@@ -1,13 +1,18 @@
 #pragma once
 
-#include <cstdlib>
+#include <algorithm>
+#include <cassert>
+#include <cstddef>
 #include <iterator>
 #include <type_traits>
-#include <vector>
+
+#include <boost/container/vector.hpp>
 
 namespace impala
 {
 
+template <class T, std::size_t N, std::size_t... Ns>
+class Tensor;
 template <class T, std::size_t N, std::size_t... Ns>
 class TensorRef;
 
@@ -35,7 +40,7 @@ private:
 	public:
 		constexpr explicit TensorRefIteratorProxy(T* ptr) noexcept : m_value{ptr} {}
 
-		constexpr pointer operator->() noexcept
+		constexpr std::add_const_t<value_type>* operator->() const noexcept
 		{
 			return &m_value;
 		}
@@ -86,12 +91,12 @@ public:
 	{
 		return itr + diff;
 	}
-	constexpr TensorRefIterator<T, Ns...>& operator-=(difference_type diff) noexcept
+	constexpr TensorRefIterator& operator-=(difference_type diff) noexcept
 	{
 		m_ptr -= static_cast<difference_type>((Ns * ...)) * diff;
 		return *this;
 	}
-	constexpr TensorRefIterator<T, Ns...> operator-(difference_type diff) noexcept
+	constexpr TensorRefIterator operator-(difference_type diff) noexcept
 	{
 		auto temp = *this;
 		temp -= diff;
@@ -136,25 +141,59 @@ private:
 	T* m_ptr;
 };
 
+namespace detail
+{
+
+template <class T, std::size_t N, std::size_t... Ns>
+struct TensorTraits
+{
+	using iterator = TensorRefIterator<T, Ns...>;
+	using reference = TensorRef<T, Ns...>;
+
+	static constexpr iterator makeIterator(T* ptr) noexcept
+	{
+		return iterator{ptr};
+	}
+	static constexpr reference makeReference(T* ptr) noexcept
+	{
+		return reference{ptr};
+	}
+};
+
+template <class T, std::size_t N>
+struct TensorTraits<T, N>
+{
+	using iterator = T*;
+	using reference = T&;
+
+	static constexpr iterator makeIterator(T* ptr) noexcept
+	{
+		return ptr;
+	}
+	static constexpr reference makeReference(T* ptr) noexcept
+	{
+		return *ptr;
+	}
+};
+
+}  // namespace detail
+
 template <class T, std::size_t N, std::size_t... Ns>
 class TensorRef
 {
 public:
-	using iterator = TensorRefIterator<T, Ns...>;
-	using const_iterator = TensorRefIterator<std::add_const_t<T>, Ns...>;
+	using Traits = detail::TensorTraits<T, N, Ns...>;
+	using iterator = typename Traits::iterator;
+	using reference = typename Traits::reference;
 
-	constexpr explicit TensorRef(T* data) : m_data{data} {}
+	constexpr explicit TensorRef(T* data) noexcept : m_data{data} {}
 
-	TensorRef(const TensorRef&) = delete;
-	TensorRef(TensorRef&&) = delete;
-	TensorRef& operator=(const TensorRef&) = delete;
-	TensorRef& operator=(TensorRef&&) = delete;
-
-	constexpr T* data() noexcept
+	template <class U, std::enable_if_t<std::is_same_v<std::add_const_t<U>, T>, std::nullptr_t> = nullptr>
+	constexpr TensorRef(TensorRef<U, N, Ns...> other) noexcept : m_data{other.data()}
 	{
-		return m_data;
 	}
-	constexpr std::add_const_t<T>* data() const noexcept
+
+	constexpr T* data() const noexcept
 	{
 		return m_data;
 	}
@@ -164,110 +203,49 @@ public:
 	}
 	constexpr std::size_t sizeOfAll() const noexcept
 	{
-		return N * (Ns * ...);
+		return (N * ... * Ns);
 	}
-	constexpr TensorRef<T, Ns...> operator[](std::size_t n) noexcept
+	constexpr reference operator[](std::size_t n) const noexcept
 	{
 		assert(n < size());
-		return TensorRef<T, Ns...>{data() + n * (Ns * ...)};
+		return Traits::makeReference(data() + n * (1 * ... * Ns));
 	}
-	constexpr TensorRef<std::add_const_t<T>, Ns...> operator[](std::size_t n) const noexcept
+	constexpr iterator begin() const noexcept
 	{
-		assert(n < size());
-		return TensorRef<std::add_const_t<T>, Ns...>{data() + n * (Ns * ...)};
+		return Traits::makeIterator(data());
 	}
-	constexpr iterator begin()
+	constexpr iterator end() const noexcept
 	{
-		return iterator{data()};
+		return Traits::makeIterator(data() + (N * ... * Ns));
 	}
-	constexpr iterator end()
+	constexpr iterator cbegin() const noexcept
 	{
-		return iterator{data() + N * (Ns * ...)};
+		return begin();
 	}
-	constexpr const_iterator cbegin() const
+	constexpr iterator cend() const noexcept
 	{
-		return const_iterator{data()};
+		return end();
 	}
-	constexpr const_iterator cend() const
+	constexpr TensorRef<std::add_const_t<T>, N, Ns...> toConstRef() const noexcept
 	{
-		return const_iterator{data() + N * (Ns * ...)};
-	}
-	constexpr const_iterator begin() const
-	{
-		return cbegin();
-	}
-	constexpr const_iterator end() const
-	{
-		return cend();
+		return TensorRef<std::add_const_t<T>, N, Ns...>{m_data};
 	}
 
-private:
-	T* m_data;
-};
-
-template <class T, std::size_t N>
-class TensorRef<T, N>
-{
-public:
-	using iterator = T*;
-	using const_iterator = std::add_const_t<T>*;
-
-	constexpr explicit TensorRef(T* data) : m_data{data} {}
-
-	TensorRef(const TensorRef&) = delete;
-	TensorRef(TensorRef&&) = delete;
-	TensorRef& operator=(const TensorRef&) = delete;
-	TensorRef& operator=(TensorRef&&) = delete;
-
-	constexpr T* data() noexcept
+	Tensor<T, N, Ns...> clone()
 	{
-		return m_data;
+		Tensor<T, N, Ns...> tensor;
+		tensor.assign(*this);
+		return tensor;
 	}
-	constexpr std::add_const_t<T>* data() const noexcept
+	TensorRef& assign(const Tensor<T, N, Ns...>& src)
 	{
-		return m_data;
+		std::copy_n(src.data(), sizeOfAll(), m_data);
+		return *this;
 	}
-	constexpr std::size_t size() const noexcept
+	TensorRef& assign(TensorRef<std::add_const_t<T>, N, Ns...> src)
 	{
-		return N;
-	}
-	constexpr std::size_t sizeOfAll() const noexcept
-	{
-		return N;
-	}
-	constexpr T& operator[](std::size_t n) noexcept
-	{
-		assert(n < size());
-		return data()[n];
-	}
-	constexpr std::add_const_t<T>& operator[](std::size_t n) const noexcept
-	{
-		assert(n < size());
-		return data()[n];
-	}
-	constexpr iterator begin()
-	{
-		return data();
-	}
-	constexpr iterator end()
-	{
-		return data() + N;
-	}
-	constexpr const_iterator cbegin() const
-	{
-		return data();
-	}
-	constexpr const_iterator cend() const
-	{
-		return data() + N;
-	}
-	constexpr const_iterator begin() const
-	{
-		return cbegin();
-	}
-	constexpr const_iterator end() const
-	{
-		return cend();
+		std::copy_n(src.data(), sizeOfAll(), m_data);
+		return *this;
 	}
 
 private:
@@ -281,19 +259,22 @@ public:
 	static_assert(!std::is_const_v<T>);
 	static_assert(((N > 0) && ... && (Ns > 0)));
 
-	using iterator = TensorRefIterator<T, Ns...>;
-	using const_iterator = TensorRefIterator<const T, Ns...>;
+	using Traits = detail::TensorTraits<T, N, Ns...>;
+	using ConstTraits = detail::TensorTraits<std::add_const_t<T>, N, Ns...>;
+	using iterator = typename Traits::iterator;
+	using const_iterator = typename ConstTraits::iterator;
+	using reference = typename Traits::reference;
+	using const_reference = typename ConstTraits::reference;
 
-	Tensor() : m_data(N * (Ns * ...)) {}
+	Tensor()
+	{
+		m_data.resize((N * ... * Ns), boost::container::default_init);
+	}
 
 private:
 	Tensor(const Tensor&) = default;
 
 public:
-	static Tensor copy(const Tensor& src)
-	{
-		return Tensor(src);
-	}
 	Tensor(Tensor&&) = default;
 	Tensor& operator=(const Tensor&) = delete;
 	Tensor& operator=(Tensor&&) = default;
@@ -302,7 +283,7 @@ public:
 	{
 		return m_data.data();
 	}
-	const T* data() const noexcept
+	std::add_const_t<T>* data() const noexcept
 	{
 		return m_data.data();
 	}
@@ -312,111 +293,74 @@ public:
 	}
 	constexpr std::size_t sizeOfAll() const noexcept
 	{
-		return N * (Ns * ...);
+		return (N * ... * Ns);
 	}
-	TensorRef<T, Ns...> operator[](std::size_t n) noexcept
+	reference operator[](std::size_t n) noexcept
 	{
 		assert(n < size());
-		return TensorRef<T, Ns...>{data() + n * (Ns * ...)};
+		return Traits::makeReference(data() + n * (1 * ... * Ns));
 	}
-	TensorRef<const T, Ns...> operator[](std::size_t n) const noexcept
+	const_reference operator[](std::size_t n) const noexcept
 	{
 		assert(n < size());
-		return TensorRef<const T, Ns...>{data() + n * (Ns * ...)};
+		return ConstTraits::makeReference(data() + n * (1 * ... * Ns));
 	}
-	iterator begin()
+	iterator begin() noexcept
 	{
-		return iterator{data()};
+		return Traits::makeIterator(data());
 	}
-	iterator end()
+	iterator end() noexcept
 	{
-		return iterator{data() + N * (Ns * ...)};
+		return Traits::makeIterator(data() + (N * ... * Ns));
 	}
-	const_iterator cbegin() const
+	const_iterator begin() const noexcept
 	{
-		return const_iterator{data()};
+		return ConstTraits::makeIterator(data());
 	}
-	const_iterator cend() const
+	const_iterator end() const noexcept
 	{
-		return const_iterator{data() + N * (Ns * ...)};
+		return ConstTraits::makeIterator(data() + (N * ... * Ns));
 	}
-	const_iterator begin() const
+	const_iterator cbegin() const noexcept
 	{
-		return cbegin();
+		return begin();
 	}
-	const_iterator end() const
+	const_iterator cend() const noexcept
 	{
-		return cend();
+		return end();
+	}
+
+	TensorRef<T, N, Ns...> ref() noexcept
+	{
+		return TensorRef<T, N, Ns...>(data());
+	}
+	TensorRef<std::add_const_t<T>, N, Ns...> cref() noexcept
+	{
+		return TensorRef<std::add_const_t<T>, N, Ns...>(data());
+	}
+
+	Tensor clone()
+	{
+		return Tensor(*this);
+	}
+	Tensor& assign(const Tensor& src)
+	{
+		m_data = src.m_data;
+		return *this;
+	}
+	Tensor& assign(Tensor&& src)
+	{
+		m_data = std::move(src.m_data);
+		return *this;
+	}
+	Tensor& assign(TensorRef<std::add_const_t<T>, N, Ns...> src)
+	{
+		m_data.assign(src.data(), src.data() + src.sizeOfAll());
+		return *this;
 	}
 
 private:
-	std::vector<T> m_data;
-};
-
-template <class T, std::size_t N>
-class Tensor<T, N>
-{
-public:
-	static_assert(!std::is_const_v<T>);
-	static_assert(N > 0);
-
-	using iterator = T*;
-	using const_iterator = const T*;
-
-	Tensor() : m_data(N) {}
-	T* data() noexcept
-	{
-		return m_data.data();
-	}
-	const T* data() const noexcept
-	{
-		return m_data.data();
-	}
-	constexpr std::size_t size() const noexcept
-	{
-		return N;
-	}
-	constexpr std::size_t sizeOfAll() const noexcept
-	{
-		return N;
-	}
-	T& operator[](std::size_t n) noexcept
-	{
-		assert(n < size());
-		return m_data[n];
-	}
-	const T& operator[](std::size_t n) const noexcept
-	{
-		assert(n < size());
-		return m_data[n];
-	}
-	iterator begin()
-	{
-		return data();
-	}
-	iterator end()
-	{
-		return data() + N;
-	}
-	const_iterator cbegin() const
-	{
-		return data();
-	}
-	const_iterator cend() const
-	{
-		return data() + N;
-	}
-	const_iterator begin() const
-	{
-		return cbegin();
-	}
-	const_iterator end() const
-	{
-		return cend();
-	}
-
-private:
-	std::vector<T> m_data;
+	boost::container::vector<T> m_data;
 };
 
 }  // namespace impala

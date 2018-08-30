@@ -2,11 +2,13 @@
 
 #include <algorithm>
 #include <cassert>
+#include <experimental/filesystem>
 #include <string>
 #include <utility>
 
 #include <boost/python.hpp>
 #include <boost/python/numpy.hpp>
+#include <range/v3/span.hpp>
 
 #include "tensor.hpp"
 
@@ -30,20 +32,40 @@ public:
 
 inline boost::python::object makePythonMainNameSpace()
 {
-	return boost::python::import("__main__").attr("__dict__");
+	namespace fs = std::experimental::filesystem;
+	auto main_ns = boost::python::import("__main__").attr("__dict__");
+	boost::python::exec("import sys", main_ns);
+	boost::python::exec(("sys.path.append(\"" + fs::canonical(".").string() + "\")").data(), main_ns);
+	return main_ns;
 }
 
 namespace detail
 {
 
-template <std::size_t Current, std::size_t M, std::size_t... Ms, std::size_t... Strides>
-inline boost::python::tuple stridesOfNdArrayHelper(std::index_sequence<M, Ms...>, std::index_sequence<Strides...>)
+template <std::size_t Current, std::size_t M, std::size_t... Ms, std::size_t... Strides, class... SizeT>
+inline boost::python::tuple stridesOfNdArrayHelper(std::index_sequence<M, Ms...>, std::index_sequence<Strides...>, SizeT... prefix)
 {
 	if constexpr (sizeof...(Ms) == 0) {
-		return boost::python::make_tuple(static_cast<int>(Strides)..., static_cast<int>(Current / M));
+		return boost::python::make_tuple(static_cast<int>(prefix)..., static_cast<int>(Strides)..., static_cast<int>(Current / M));
 	} else {
-		return stridesOfNdArrayHelper<Current / M>(std::index_sequence<Ms...>{}, std::index_sequence<Strides..., Current / M>{});
+		return stridesOfNdArrayHelper<Current / M>(std::index_sequence<Ms...>{}, std::index_sequence<Strides..., Current / M>{}, prefix...);
 	}
+}
+
+struct NdArrayTraitsPlaceHolder
+{};
+
+template <std::size_t size_of_all, std::size_t... Ms, class... SizeTOrPlaceHolder>
+inline boost::python::tuple stridesOfNdArrayHelper2(std::size_t current, std::size_t batch_size, SizeTOrPlaceHolder... data)
+{
+	return stridesOfNdArrayHelper2<size_of_all, Ms...>(current / batch_size, data..., current / batch_size);
+}
+
+template <std::size_t size_of_all, std::size_t... Ms, class... SizeTOrPlaceHolder>
+inline boost::python::tuple stridesOfNdArrayHelper2([[maybe_unused]] std::size_t current, NdArrayTraitsPlaceHolder, SizeTOrPlaceHolder... data)
+{
+	assert(current == size_of_all);
+	return stridesOfNdArrayHelper<size_of_all>(std::index_sequence<Ms...>{}, std::index_sequence<>{}, data...);
 }
 
 }  // namespace detail
@@ -52,23 +74,27 @@ template <class T, std::size_t... Ns>
 class NdArrayTraits
 {
 public:
+	using value_type = T;
+
 	static inline constexpr std::size_t size_of_all = (Ns * ...);
 
 	static boost::python::tuple shapeOfNdArray()
 	{
 		return boost::python::make_tuple(static_cast<int>(Ns)...);
 	}
-	static boost::python::tuple shapeOfBatchedNdArray(std::size_t batch_size)
+	template <class... SizeT, std::enable_if_t<std::conjunction_v<std::is_convertible<SizeT, std::size_t>...>, std::nullptr_t> = nullptr>
+	static boost::python::tuple shapeOfBatchedNdArray(SizeT... batch_sizes)
 	{
-		return boost::python::make_tuple(static_cast<int>(batch_size), static_cast<int>(Ns)...);
+		return boost::python::make_tuple(static_cast<int>(batch_sizes)..., static_cast<int>(Ns)...);
 	}
 	static boost::python::tuple stridesOfNdArray()
 	{
 		return detail::stridesOfNdArrayHelper<sizeof(T) * size_of_all>(std::index_sequence<Ns...>{}, std::index_sequence<>{});
 	}
-	static boost::python::tuple stridesOfBatchedNdArray()
+	template <class... SizeT, std::enable_if_t<std::conjunction_v<std::is_convertible<SizeT, std::size_t>...>, std::nullptr_t> = nullptr>
+	static boost::python::tuple stridesOfBatchedNdArray(SizeT... batch_sizes)
 	{
-		return detail::stridesOfNdArrayHelper<sizeof(T) * size_of_all>(std::index_sequence<1, Ns...>{}, std::index_sequence<>{});
+		return detail::stridesOfNdArrayHelper2<sizeof(T) * size_of_all, Ns...>((batch_sizes * ... * (sizeof(T) * size_of_all)), batch_sizes..., detail::NdArrayTraitsPlaceHolder{});
 	}
 
 	static boost::python::numpy::ndarray convertToNdArray(Tensor<T, Ns...>& tensor)
@@ -95,30 +121,41 @@ public:
 		}
 		return buffer;
 	}
-	template <class InputIterator, class Callback,
+	template <class ForwardIterator, class Callback,
 	    std::enable_if_t<
 	        std::conjunction_v<
-	            std::is_base_of<std::input_iterator_tag, typename std::iterator_traits<InputIterator>::iterator_category>,
-	            std::is_invocable<Callback, typename std::iterator_traits<InputIterator>::reference, TensorRef<T, Ns...>&>>,
+	            std::is_base_of<std::forward_iterator_tag, typename std::iterator_traits<ForwardIterator>::iterator_category>,
+	            std::is_invocable<Callback, typename std::iterator_traits<ForwardIterator>::reference, TensorRef<T, Ns...>&>>,
 	        std::nullptr_t> = nullptr>
-	static std::vector<T> makeBufferForBatch(InputIterator first, InputIterator last, Callback&& callback)
+	static std::vector<T> makeBufferForBatch(ForwardIterator first, ForwardIterator last, Callback&& callback)
 	{
 		const auto batch_size = static_cast<std::size_t>(std::distance(first, last));
 		std::vector<T> buffer(batch_size * size_of_all);
 		auto dest = buffer.data();
 		for (; first != last; ++first) {
 			TensorRef<T, Ns...> tensor_ref{dest};
-			callback(*first, tensor_ref);
+			std::invoke(callback, *first, tensor_ref);
 			dest += size_of_all;
 		}
 		return buffer;
 	}
-	static boost::python::numpy::ndarray convertToBatchedNdArray(std::vector<T>& buffer)
+
+	// 返り値のndarrayはspanの元となったメモリ領域を直接参照するため、lifetimeに注意
+	static boost::python::numpy::ndarray convertToBatchedNdArray(ranges::span<T> buffer)
 	{
-		assert(buffer.size() % size_of_all == 0);
-		const auto batch_size = buffer.size() / size_of_all;
+		assert(static_cast<std::size_t>(buffer.size()) % size_of_all == 0);
+		const auto batch_size = static_cast<std::size_t>(buffer.size()) / size_of_all;
 		namespace np = boost::python::numpy;
-		return np::from_data(buffer.data(), np::dtype::get_builtin<T>(), shapeOfBatchedNdArray(batch_size), stridesOfBatchedNdArray(), boost::python::object());
+		return np::from_data(buffer.data(), np::dtype::get_builtin<T>(), shapeOfBatchedNdArray(batch_size), stridesOfBatchedNdArray(batch_size), boost::python::object());
+	}
+
+	// 返り値のndarrayはspanの元となったメモリ領域を直接参照するため、lifetimeに注意
+	template <class... SizeT, std::enable_if_t<std::conjunction_v<std::is_convertible<SizeT, std::size_t>...>, std::nullptr_t> = nullptr>
+	static boost::python::numpy::ndarray convertToBatchedNdArray(ranges::span<T> buffer, SizeT... batch_sizes)
+	{
+		assert(static_cast<std::size_t>(buffer.size()) == (batch_sizes * ... * size_of_all));
+		namespace np = boost::python::numpy;
+		return np::from_data(buffer.data(), np::dtype::get_builtin<T>(), shapeOfBatchedNdArray(batch_sizes...), stridesOfBatchedNdArray(batch_sizes...), boost::python::object());
 	}
 };
 

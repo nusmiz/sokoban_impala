@@ -45,16 +45,11 @@ public:
 	Observation reset()
 	{
 		auto index = std::uniform_int_distribution<std::size_t>{0, m_problems.size() - 1}(m_random_engine);
-		m_states = Observation::copy(m_problems.at(index));
-		return Observation::copy(m_states);
+		m_states = m_problems.at(index).clone();
+		return m_states.clone();
 	}
 	std::tuple<Observation, Reward, EnvState> step(const Action& action);
 	void render() const {}
-
-	static Reward decayReward(Reward reward)
-	{
-		return reward * 0.99f;
-	}
 
 	template <class InputIterator,
 	    std::enable_if_t<
@@ -83,5 +78,6 @@ private:
 	std::mt19937 m_random_engine;
 };
 
+static_assert(IsEnvironmentV<SokobanEnv>);
 
 }  // namespace impala

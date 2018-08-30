@@ -7,6 +7,7 @@
 
 #include <boost/python.hpp>
 #include <boost/python/numpy.hpp>
+#include <range/v3/span.hpp>
 
 #include "python_util.hpp"
 
@@ -16,12 +17,20 @@ namespace impala
 class Network
 {
 public:
+	struct Loss
+	{
+		double v_loss;
+		double pi_loss;
+		double entropy_loss;
+	};
+
 	using State = boost::python::numpy::ndarray;
+	using StateTraits = NdArrayTraits<float, 3, 80, 80>;
 	using Reward = float;
 
 	Network();
-	std::vector<std::tuple<std::int64_t, float>> predict(const State& states);
-	std::tuple<double, double, double> train(const State& states, const std::vector<std::int64_t>& action_ids, const std::vector<Reward>& rewards, const std::vector<float>& behaviour_policy, const std::vector<std::int64_t>& data_sizes);
+	std::vector<std::tuple<std::int64_t, float>> predict(ranges::span<typename StateTraits::value_type> states);
+	Loss train(ranges::span<typename StateTraits::value_type> states, ranges::span<std::int64_t> action_ids, ranges::span<Reward> rewards, ranges::span<float> behaviour_policies, ranges::span<std::int64_t> data_sizes);
 	void save(int index);
 
 private:

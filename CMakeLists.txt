@@ -22,5 +22,5 @@ set(impala_source
 add_executable(impala ${impala_source})
 target_include_directories(impala PRIVATE .)
 target_include_directories(impala SYSTEM PRIVATE ./range-v3/include)
-target_include_directories(impala PRIVATE ${Boost_INCLUDE_DIRS} ${PYTHON_INCLUDE_DIRS})
+target_include_directories(impala SYSTEM PRIVATE ${Boost_INCLUDE_DIRS} ${PYTHON_INCLUDE_DIRS})
 target_link_libraries(impala PRIVATE ${Boost_LIBRARIES} ${PYTHON_LIBRARIES} Threads::Threads stdc++fs)

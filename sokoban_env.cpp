@@ -291,7 +291,7 @@ std::tuple<SokobanEnv::Observation, SokobanEnv::Reward, EnvState> SokobanEnv::st
 	}
 	float reward = -0.1f;
 	if (player_x + diff_x < 0 || player_x + diff_x >= ROOM_WIDTH || player_y + diff_y < 0 || player_y + diff_y >= ROOM_HEIGHT) {
-		return std::make_tuple(Observation::copy(m_states), reward, EnvState::RUNNING);
+		return std::make_tuple(m_states.clone(), reward, EnvState::RUNNING);
 	}
 	auto& player_cell = m_states[player_y][player_x];
 	auto& target = m_states[player_y + diff_y][player_x + diff_x];
@@ -311,7 +311,7 @@ std::tuple<SokobanEnv::Observation, SokobanEnv::Reward, EnvState> SokobanEnv::st
 		target = CellState::PLAYER_TARGET;
 	} else if (target == CellState::BOX) {
 		if (player_x + diff_x * 2 < 0 || player_x + diff_x * 2 >= ROOM_WIDTH || player_y + diff_y * 2 < 0 || player_y + diff_y * 2 >= ROOM_HEIGHT) {
-			return std::make_tuple(Observation::copy(m_states), reward, EnvState::RUNNING);
+			return std::make_tuple(m_states.clone(), reward, EnvState::RUNNING);
 		}
 		auto& target_next = m_states[player_y + diff_y * 2][player_x + diff_x * 2];
 		if (target_next == CellState::EMPTY) {
@@ -334,7 +334,7 @@ std::tuple<SokobanEnv::Observation, SokobanEnv::Reward, EnvState> SokobanEnv::st
 		}
 	} else if (target == CellState::BOX_TARGET) {
 		if (player_x + diff_x * 2 < 0 || player_x + diff_x * 2 >= ROOM_WIDTH || player_y + diff_y * 2 < 0 || player_y + diff_y * 2 >= ROOM_HEIGHT) {
-			return std::make_tuple(Observation::copy(m_states), reward, EnvState::RUNNING);
+			return std::make_tuple(m_states.clone(), reward, EnvState::RUNNING);
 		}
 		auto& target_next = m_states[player_y + diff_y * 2][player_x + diff_x * 2];
 		if (target_next == CellState::EMPTY) {
@@ -369,7 +369,7 @@ std::tuple<SokobanEnv::Observation, SokobanEnv::Reward, EnvState> SokobanEnv::st
 	if (done) {
 		reward += 10.0f;
 	}
-	return std::make_tuple(Observation::copy(m_states), reward, done ? EnvState::FINISHED : EnvState::RUNNING);
+	return std::make_tuple(m_states.clone(), reward, done ? EnvState::FINISHED : EnvState::RUNNING);
 }
 
 

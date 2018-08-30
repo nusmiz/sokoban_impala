@@ -19,7 +19,7 @@ namespace detail
 template <class T,
     std::enable_if_t<
         std::conjunction_v<
-            std::is_same<std::decay_t<decltype(DiscreteActionTraits<T>::num_actions)>, std::int64_t>,
+            std::is_same<decltype(DiscreteActionTraits<T>::num_actions), const std::int64_t>,
             std::is_invocable_r<std::int64_t, decltype(&DiscreteActionTraits<T>::convertToID), T>,
             std::is_invocable_r<T, decltype(&DiscreteActionTraits<T>::convertFromID), std::int64_t>>,
         std::nullptr_t> = nullptr>

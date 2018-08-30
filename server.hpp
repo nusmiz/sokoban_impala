@@ -12,7 +12,6 @@
 
 #include <boost/container/static_vector.hpp>
 #include <range/v3/view/indices.hpp>
-#include <range/v3/view/reverse.hpp>
 #include <range/v3/view/zip.hpp>
 
 #include "environment.hpp"
@@ -20,7 +19,25 @@
 namespace impala
 {
 
-template <class Environment, class Model, std::size_t NUM_AGENTS, std::size_t NUM_PREDICTORS = 2, std::size_t NUM_TRAINERS = 2>
+struct DefaultServerParams
+{
+	static inline constexpr std::size_t NUM_AGENTS = 2048;
+	static inline constexpr std::size_t NUM_PREDICTORS = 2;
+	static inline constexpr std::size_t NUM_TRAINERS = 2;
+
+	static inline constexpr std::size_t MIN_PREDICTION_BATCH_SIZE = 512;
+	static inline constexpr std::size_t MAX_PREDICTION_BATCH_SIZE = 1024;
+	static inline constexpr std::size_t MIN_TRAINING_BATCH_SIZE = 512;
+	static inline constexpr std::size_t MAX_TRAINING_BATCH_SIZE = 1024;
+
+	static inline constexpr std::size_t T_MAX = 5;
+	static inline constexpr std::optional<std::size_t> MAX_EPISODE_LENGTH = std::nullopt;
+
+	static inline constexpr std::optional<std::size_t> LOG_INTERVAL_STEPS = 10000;
+	static inline constexpr std::optional<std::size_t> SAVE_INTERVAL_STEPS = 1000000;
+};
+
+template <class Environment, class Model, class Parameters = DefaultServerParams>
 class Server
 {
 public:
@@ -31,16 +48,31 @@ public:
 	using ObsBatch = typename Environment::ObsBatch;
 	using Action = typename Environment::Action;
 
-	Server(int max_episode_length = -1) : m_max_episode_length{max_episode_length}
+	static inline constexpr std::size_t NUM_AGENTS = Parameters::NUM_AGENTS;
+	static inline constexpr std::size_t NUM_PREDICTORS = Parameters::NUM_PREDICTORS;
+	static inline constexpr std::size_t NUM_TRAINERS = Parameters::NUM_TRAINERS;
+
+	static inline constexpr std::size_t MIN_PREDICTION_BATCH_SIZE = Parameters::MIN_PREDICTION_BATCH_SIZE;
+	static inline constexpr std::size_t MAX_PREDICTION_BATCH_SIZE = Parameters::MAX_PREDICTION_BATCH_SIZE;
+	static inline constexpr std::size_t MIN_TRAINING_BATCH_SIZE = Parameters::MIN_TRAINING_BATCH_SIZE;
+	static inline constexpr std::size_t MAX_TRAINING_BATCH_SIZE = Parameters::MAX_TRAINING_BATCH_SIZE;
+
+	static inline constexpr std::size_t T_MAX = Parameters::T_MAX;
+	static inline constexpr std::optional<std::size_t> MAX_EPISODE_LENGTH = Parameters::MAX_EPISODE_LENGTH;
+
+	static inline constexpr std::optional<std::size_t> LOG_INTERVAL_STEPS = Parameters::LOG_INTERVAL_STEPS;
+	static inline constexpr std::optional<std::size_t> SAVE_INTERVAL_STEPS = Parameters::SAVE_INTERVAL_STEPS;
+
+	Server()
 	{
 		for ([[maybe_unused]] auto&& i : ranges::view::indices(NUM_PREDICTORS)) {
-			m_predictors.emplace_back(this);
+			m_predictors.emplace_back(*this);
 		}
 		for ([[maybe_unused]] auto&& i : ranges::view::indices(NUM_TRAINERS)) {
-			m_trainers.emplace_back(this);
+			m_trainers.emplace_back(*this);
 		}
 		for ([[maybe_unused]] auto&& i : ranges::view::indices(NUM_AGENTS)) {
-			m_agents.emplace_back(this);
+			m_agents.emplace_back(*this);
 		}
 	}
 	~Server()
@@ -83,31 +115,33 @@ public:
 				std::swap(m_prediction_batches, prediction_batches);
 			}
 			for (auto&& batch : training_batches) {
-				auto states = Environment::batchToNetworkInput(batch.states);
-				auto [v_loss, pi_loss, entropy_loss] = m_model.train(states, batch.actions, batch.rewards, batch.policy, batch.data_sizes);
-				batch.trainer->processFinished();
+				auto [v_loss, pi_loss, entropy_loss] = m_model.train(batch.states, batch.actions, batch.rewards, batch.policies, batch.data_sizes);
+				batch.trainer.get().processFinished();
 				average_v_loss = average_loss_decay * average_v_loss + (1.0 - average_loss_decay) * v_loss;
 				average_pi_loss = average_loss_decay * average_pi_loss + (1.0 - average_loss_decay) * pi_loss;
 				average_entropy_loss = average_loss_decay * average_entropy_loss + (1.0 - average_loss_decay) * entropy_loss;
 				auto prev_trained_steps = trained_steps;
-				for (std::size_t i = 0; i < T_MAX; ++i) {
+				for (auto i : ranges::view::indices(T_MAX)) {
 					trained_steps += batch.data_sizes.at(i);
 				}
-				if (trained_steps / 10000 != prev_trained_steps / 10000) {
-					std::cout << "steps " << trained_steps << " , loss " << average_v_loss << " " << average_pi_loss << " " << average_entropy_loss << std::endl;
+				if constexpr (LOG_INTERVAL_STEPS.has_value()) {
+					if (trained_steps / LOG_INTERVAL_STEPS.value() != prev_trained_steps / LOG_INTERVAL_STEPS.value()) {
+						std::cout << "steps " << trained_steps << " , loss " << average_v_loss << " " << average_pi_loss << " " << average_entropy_loss << std::endl;
+					}
 				}
-				if (trained_steps / 1000000 != prev_trained_steps / 1000000) {
-					m_model.save(static_cast<int>(trained_steps));
+				if constexpr (SAVE_INTERVAL_STEPS.has_value()) {
+					if (trained_steps / SAVE_INTERVAL_STEPS.value() != prev_trained_steps / SAVE_INTERVAL_STEPS.value()) {
+						m_model.save(static_cast<int>(trained_steps));
+					}
 				}
 			}
 			for (auto&& batch : prediction_batches) {
-				auto states = Environment::batchToNetworkInput(batch.states);
-				auto actions_and_policy_list = m_model.predict(states);
-				assert(actions_and_policy_list.size() == batch.agents.size());
-				batch.predictor->processFinished();
-				for (auto&& [agent, action_and_policy] : ranges::view::zip(batch.agents, actions_and_policy_list)) {
+				auto actions_and_policies = m_model.predict(batch.states);
+				assert(actions_and_policies.size() == batch.agents.size());
+				batch.predictor.get().processFinished();
+				for (auto&& [agent, action_and_policy] : ranges::view::zip(batch.agents, actions_and_policies)) {
 					auto&& [action, policy] = action_and_policy;
-					agent->setNextActionAndPolicy(DiscreteActionTraits<Action>::convertFromID(action), policy);
+					agent.get().setNextActionAndPolicy(DiscreteActionTraits<Action>::convertFromID(action), policy);
 				}
 			}
 			if (trained_steps >= training_steps) {
@@ -122,40 +156,38 @@ private:
 	class Trainer;
 	class Agent;
 
+	struct PredictionData
+	{
+		std::reference_wrapper<std::add_const_t<Observation>> observation;
+		std::reference_wrapper<Agent> agent;
+	};
 	struct PredictionBatch
 	{
 		ObsBatch states;
-		std::vector<Agent*> agents;
-		Predictor* predictor;
+		std::vector<std::reference_wrapper<Agent>> agents;
+		std::reference_wrapper<Predictor> predictor;
 	};
 	struct TrainingData
 	{
 		std::vector<Observation> observations;
 		std::vector<Action> actions;
 		std::vector<Reward> rewards;
-		std::vector<float> policy;
+		std::vector<float> policies;
 	};
 	struct TrainingBatch
 	{
-		std::vector<std::int64_t> data_sizes;
+		std::array<std::int64_t, T_MAX + 1> data_sizes;
 		ObsBatch states;
 		std::vector<std::int64_t> actions;
 		std::vector<Reward> rewards;
-		std::vector<float> policy;
-		Trainer* trainer;
+		std::vector<float> policies;
+		std::reference_wrapper<Trainer> trainer;
 	};
-
-	static inline constexpr std::size_t MIN_PREDICTION_BATCH_SIZE = 512;
-	static inline constexpr std::size_t MAX_PREDICTION_BATCH_SIZE = 1024;
-	static inline constexpr std::size_t MIN_TRAINING_BATCH_SIZE = 512;
-	static inline constexpr std::size_t MAX_TRAINING_BATCH_SIZE = 1024;
-
-	static inline constexpr int T_MAX = 5;
 
 	class Predictor
 	{
 	public:
-		explicit Predictor(Server* server) noexcept : m_server(server)
+		explicit Predictor(Server& server) noexcept : m_server(server)
 		{
 			m_thread = std::thread{[this] {
 				run();
@@ -170,41 +202,38 @@ private:
 		{
 			while (true) {
 				std::vector<std::reference_wrapper<std::add_const_t<Observation>>> observations;
-				std::vector<Agent*> agents;
+				std::vector<std::reference_wrapper<Agent>> agents;
 				observations.reserve(MAX_PREDICTION_BATCH_SIZE);
 				agents.reserve(MAX_PREDICTION_BATCH_SIZE);
 				bool data_remain = false;
 				{
-					std::unique_lock lock{m_server->m_prediction_queue_lock};
-					m_server->m_predictor_event.wait(lock, [this] { return m_server->m_prediction_queue.size() >= MIN_PREDICTION_BATCH_SIZE || m_exit_flag; });
+					std::unique_lock lock{m_server.get().m_prediction_queue_lock};
+					m_server.get().m_predictor_event.wait(lock, [this] { return m_server.get().m_prediction_queue.size() >= MIN_PREDICTION_BATCH_SIZE || m_exit_flag; });
 					if (m_exit_flag) {
 						break;
 					}
-					auto& queue = m_server->m_prediction_queue;
+					auto& queue = m_server.get().m_prediction_queue;
 					while (!queue.empty()) {
 						if (observations.size() >= MAX_PREDICTION_BATCH_SIZE) {
 							break;
 						}
 						auto& data = queue.front();
-						observations.emplace_back(std::move(std::get<0>(data)));
-						agents.emplace_back(std::move(std::get<1>(data)));
+						observations.emplace_back(data.observation);
+						agents.emplace_back(data.agent);
 						queue.pop_front();
 					}
 					data_remain = (queue.size() >= MIN_PREDICTION_BATCH_SIZE);
 				}
 				if (data_remain) {
-					m_server->m_predictor_event.notify_one();
+					m_server.get().m_predictor_event.notify_one();
 				}
-				PredictionBatch batch;
-				batch.states = Environment::makeBatch(observations.begin(), observations.end());
-				batch.agents = std::move(agents);
-				batch.predictor = this;
+				PredictionBatch batch{Environment::makeBatch(observations.begin(), observations.end()), std::move(agents), *this};
 				{
-					std::lock_guard lock{m_server->m_batches_lock};
-					m_server->m_prediction_batches.emplace_back(std::move(batch));
+					std::lock_guard lock{m_server.get().m_batches_lock};
+					m_server.get().m_prediction_batches.emplace_back(std::move(batch));
 					m_processing_flag = true;
 				}
-				m_server->m_server_event.notify_one();
+				m_server.get().m_server_event.notify_one();
 				{
 					std::unique_lock lock{m_mutex};
 					m_event.wait(lock, [this] { return !m_processing_flag || m_exit_flag; });
@@ -234,7 +263,7 @@ private:
 		}
 
 	private:
-		Server* m_server;
+		std::reference_wrapper<Server> m_server;
 		std::thread m_thread;
 		std::mutex m_mutex;
 		std::condition_variable m_event;
@@ -245,7 +274,7 @@ private:
 	class Trainer
 	{
 	public:
-		explicit Trainer(Server* server) noexcept : m_server(server)
+		explicit Trainer(Server& server) noexcept : m_server(server)
 		{
 			m_thread = std::thread{[this] {
 				run();
@@ -264,19 +293,19 @@ private:
 				std::vector<Observation> observations;
 				std::vector<std::int64_t> actions;
 				std::vector<Reward> rewards;
-				std::vector<float> policy;
+				std::vector<float> policies;
 				observations.reserve(MAX_TRAINING_BATCH_SIZE * (T_MAX + 1));
 				actions.reserve(MAX_TRAINING_BATCH_SIZE * T_MAX);
 				rewards.reserve(MAX_TRAINING_BATCH_SIZE * T_MAX);
-				policy.reserve(MAX_TRAINING_BATCH_SIZE * T_MAX);
+				policies.reserve(MAX_TRAINING_BATCH_SIZE * T_MAX);
 				bool data_remain = false;
 				{
-					std::unique_lock lock{m_server->m_training_queue_lock};
-					m_server->m_trainer_event.wait(lock, [this] { return m_server->m_training_queue.size() >= MIN_TRAINING_BATCH_SIZE || m_exit_flag; });
+					std::unique_lock lock{m_server.get().m_training_queue_lock};
+					m_server.get().m_trainer_event.wait(lock, [this] { return m_server.get().m_training_queue.size() >= MIN_TRAINING_BATCH_SIZE || m_exit_flag; });
 					if (m_exit_flag) {
 						break;
 					}
-					auto& queue = m_server->m_training_queue;
+					auto& queue = m_server.get().m_training_queue;
 					while (!queue.empty()) {
 						if (datas.size() >= MAX_TRAINING_BATCH_SIZE) {
 							break;
@@ -288,23 +317,23 @@ private:
 					data_remain = (queue.size() >= MIN_TRAINING_BATCH_SIZE);
 				}
 				if (data_remain) {
-					m_server->m_trainer_event.notify_one();
+					m_server.get().m_trainer_event.notify_one();
 				}
 				std::sort(datas.begin(), datas.end(), [](const auto& a, const auto& b) {
 					return a.observations.size() > b.observations.size();
 				});
-				for (std::size_t i = 0; i < T_MAX; ++i) {
+				for (auto i : ranges::view::indices(T_MAX)) {
 					for (auto& data : datas) {
 						if (i >= data.actions.size()) {
 							observations.emplace_back(Observation{});
 							actions.emplace_back(0);
 							rewards.emplace_back(Reward{});
-							policy.emplace_back(0.0f);
+							policies.emplace_back(0.0f);
 						} else {
 							observations.emplace_back(std::move(data.observations.at(i)));
 							actions.emplace_back(DiscreteActionTraits<Action>::convertToID(data.actions.at(i)));
 							rewards.emplace_back(std::move(data.rewards.at(i)));
-							policy.emplace_back(std::move(data.policy.at(i)));
+							policies.emplace_back(std::move(data.policies.at(i)));
 						}
 					}
 				}
@@ -316,25 +345,19 @@ private:
 					}
 				}
 
-				TrainingBatch batch;
-				batch.data_sizes.resize(T_MAX + 1);
-				for (std::size_t i = 0; i < T_MAX + 1; ++i) {
+				TrainingBatch batch{{}, Environment::makeBatch(observations.cbegin(), observations.cend()), std::move(actions), std::move(rewards), std::move(policies), *this};
+				for (auto i : ranges::view::indices(T_MAX + 1)) {
 					auto it = std::upper_bound(datas.begin(), datas.end(), i + 1, [](std::size_t x, const auto& y) {
-    					return x > y.observations.size();
-    				});
+						return x > y.observations.size();
+					});
 					batch.data_sizes.at(i) = it - datas.begin();
 				}
-				batch.states = Environment::makeBatch(observations.cbegin(), observations.cend());
-				batch.actions = std::move(actions);
-				batch.rewards = std::move(rewards);
-				batch.policy = std::move(policy);
-				batch.trainer = this;
 				{
-					std::lock_guard lock{m_server->m_batches_lock};
-					m_server->m_training_batches.emplace_back(std::move(batch));
+					std::lock_guard lock{m_server.get().m_batches_lock};
+					m_server.get().m_training_batches.emplace_back(std::move(batch));
 					m_processing_flag = true;
 				}
-				m_server->m_server_event.notify_one();
+				m_server.get().m_server_event.notify_one();
 				{
 					std::unique_lock lock{m_mutex};
 					m_event.wait(lock, [this] { return !m_processing_flag || m_exit_flag; });
@@ -364,7 +387,7 @@ private:
 		}
 
 	private:
-		Server* m_server;
+		std::reference_wrapper<Server> m_server;
 		std::thread m_thread;
 		std::mutex m_mutex;
 		std::condition_variable m_event;
@@ -375,7 +398,7 @@ private:
 	class Agent
 	{
 	public:
-		explicit Agent(Server* server) noexcept : m_server(server)
+		explicit Agent(Server& server) noexcept : m_server(server)
 		{
 			m_thread = std::thread{[this] {
 				run();
@@ -391,30 +414,35 @@ private:
 			std::vector<Observation> prev_obss;
 			std::vector<Action> prev_actions;
 			std::vector<Reward> prev_rewards;
-			std::vector<float> prev_policy;
+			std::vector<float> prev_policies;
 			prev_obss.reserve(T_MAX + 1);
 			prev_actions.reserve(T_MAX + 1);
 			prev_rewards.reserve(T_MAX + 1);
-			prev_policy.reserve(T_MAX + 1);
+			prev_policies.reserve(T_MAX + 1);
 			while (true) {
 				prev_obss.clear();
 				prev_actions.clear();
 				prev_rewards.clear();
-				prev_policy.clear();
+				prev_policies.clear();
 				Reward sum_of_reward = Reward{};
-				int t = 0;
+				std::size_t t = 0;
 				Observation observation = m_env.reset();
-				for (; t != m_server->m_max_episode_length; ++t) {
+				while (true) {
+					if constexpr (MAX_EPISODE_LENGTH.has_value()) {
+						if (t >= MAX_EPISODE_LENGTH.value()) {
+							break;
+						}
+					}
 					{
 						bool enough_predictor_data = false;
 						{
-							std::lock_guard lock{m_server->m_prediction_queue_lock};
-							m_server->m_prediction_queue.emplace_back(std::cref(observation), this);
+							std::lock_guard lock{m_server.get().m_prediction_queue_lock};
+							m_server.get().m_prediction_queue.emplace_back(PredictionData{std::cref(observation), *this});
 							m_predicting_flag = true;
-							enough_predictor_data = m_server->m_prediction_queue.size() >= MIN_PREDICTION_BATCH_SIZE;
+							enough_predictor_data = m_server.get().m_prediction_queue.size() >= MIN_PREDICTION_BATCH_SIZE;
 						}
 						if (enough_predictor_data) {
-							m_server->m_predictor_event.notify_one();
+							m_server.get().m_predictor_event.notify_one();
 						}
 					}
 					Action next_action;
@@ -429,38 +457,39 @@ private:
 						policy = m_policy;
 					}
 					auto&& [next_obs, current_reward, status] = m_env.step(next_action);
+					++t;
 					sum_of_reward += current_reward;
 					if (status == EnvState::FINISHED || prev_obss.size() >= T_MAX) {
 						assert(prev_obss.size() == prev_actions.size() && prev_obss.size() == prev_rewards.size());
 						TrainingData data;
 						std::optional<TrainingData> data2;
-						for (auto&& [obs, action, reward, policy] : ranges::view::zip(prev_obss, prev_actions, prev_rewards, prev_policy)) {
+						for (auto&& [obs, action, reward, policy] : ranges::view::zip(prev_obss, prev_actions, prev_rewards, prev_policies)) {
 							data.observations.emplace_back(std::move(obs));
 							data.actions.emplace_back(std::move(action));
 							data.rewards.emplace_back(std::move(reward));
-							data.policy.emplace_back(std::move(policy));
+							data.policies.emplace_back(std::move(policy));
 						}
 						if (status == EnvState::FINISHED) {
 							if (data.actions.size() < T_MAX) {
 								data.observations.emplace_back(std::move(observation));
 								data.actions.emplace_back(std::move(next_action));
 								data.rewards.emplace_back(std::move(current_reward));
-								data.policy.emplace_back(std::move(policy));
+								data.policies.emplace_back(std::move(policy));
 							} else {
-								data.observations.emplace_back(Observation::copy(observation));
+								data.observations.emplace_back(observation.clone());
 								data2.emplace();
 								data2->observations.emplace_back(std::move(observation));
 								data2->actions.emplace_back(std::move(next_action));
 								data2->rewards.emplace_back(std::move(current_reward));
-								data2->policy.emplace_back(std::move(policy));
+								data2->policies.emplace_back(std::move(policy));
 							}
 						} else {
-							data.observations.emplace_back(Observation::copy(observation));
+							data.observations.emplace_back(observation.clone());
 						}
 						bool enough_trainer_data = false;
 						{
-							std::lock_guard lock{m_server->m_training_queue_lock};
-							auto& queue = m_server->m_training_queue;
+							std::lock_guard lock{m_server.get().m_training_queue_lock};
+							auto& queue = m_server.get().m_training_queue;
 							queue.emplace_back(std::move(data));
 							if (data2) {
 								queue.emplace_back(std::move(data2.value()));
@@ -468,12 +497,12 @@ private:
 							enough_trainer_data = (queue.size() >= MIN_TRAINING_BATCH_SIZE);
 						}
 						if (enough_trainer_data) {
-							m_server->m_trainer_event.notify_one();
+							m_server.get().m_trainer_event.notify_one();
 						}
 						prev_obss.clear();
 						prev_actions.clear();
 						prev_rewards.clear();
-						prev_policy.clear();
+						prev_policies.clear();
 						if (status == EnvState::FINISHED) {
 							break;
 						}
@@ -482,9 +511,9 @@ private:
 					observation = std::move(next_obs);
 					prev_actions.emplace_back(std::move(next_action));
 					prev_rewards.emplace_back(std::move(current_reward));
-					prev_policy.emplace_back(std::move(policy));
+					prev_policies.emplace_back(std::move(policy));
 				}
-				if (this == &m_server->m_agents.front()) {
+				if (this == &m_server.get().m_agents.front()) {
 					std::cout << "finish episode : " << t << " " << std::setprecision(5) << sum_of_reward << std::endl;
 				}
 			}
@@ -511,7 +540,7 @@ private:
 		}
 
 	private:
-		Server* m_server;
+		std::reference_wrapper<Server> m_server;
 		std::thread m_thread;
 		std::mutex m_mutex;
 		std::condition_variable m_event;
@@ -526,8 +555,7 @@ private:
 	boost::container::static_vector<Trainer, NUM_TRAINERS> m_trainers;
 	boost::container::static_vector<Agent, NUM_AGENTS> m_agents;
 	Model m_model;
-	int m_max_episode_length = -1;
-	std::deque<std::tuple<std::reference_wrapper<std::add_const_t<Observation>>, Agent*>> m_prediction_queue;
+	std::deque<PredictionData> m_prediction_queue;
 	std::mutex m_prediction_queue_lock;
 	std::condition_variable m_predictor_event;
 	std::deque<TrainingData> m_training_queue;
