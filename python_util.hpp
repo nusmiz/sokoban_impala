@@ -103,20 +103,29 @@ public:
 		return np::from_data(tensor.data(), np::dtype::get_builtin<T>(), shapeOfNdArray(), stridesOfNdArray(), boost::python::object());
 	}
 
-	template <class InputIterator,
+	template <class ForwardIterator,
 	    std::enable_if_t<
 	        std::conjunction_v<
-	            std::is_base_of<std::input_iterator_tag, typename std::iterator_traits<InputIterator>::iterator_category>,
-	            std::is_convertible<typename std::iterator_traits<InputIterator>::reference, const Tensor<T, Ns...>&>>,
+	            std::is_base_of<std::forward_iterator_tag, typename std::iterator_traits<ForwardIterator>::iterator_category>,
+	            std::disjunction<
+	                std::is_convertible<typename std::iterator_traits<ForwardIterator>::reference, const Tensor<T, Ns...>&>,
+	                std::is_convertible<typename std::iterator_traits<ForwardIterator>::reference, const std::optional<Tensor<T, Ns...>>&>>>,
 	        std::nullptr_t> = nullptr>
-	static std::vector<T> makeBufferForBatch(InputIterator first, InputIterator last)
+	static std::vector<T> makeBufferForBatch(ForwardIterator first, ForwardIterator last)
 	{
 		const auto batch_size = static_cast<std::size_t>(std::distance(first, last));
 		std::vector<T> buffer(batch_size * size_of_all);
 		auto dest = buffer.begin();
 		for (; first != last; ++first) {
-			const Tensor<T, Ns...>& src = *first;
-			std::copy_n(src.data(), size_of_all, dest);
+			if constexpr (std::is_convertible_v<typename std::iterator_traits<ForwardIterator>::reference, const Tensor<T, Ns...>&>) {
+				const Tensor<T, Ns...>& src = *first;
+				std::copy_n(src.data(), size_of_all, dest);
+			} else {
+				const std::optional<Tensor<T, Ns...>>& src = *first;
+				if (src.has_value()) {
+					std::copy_n(src.value().data(), size_of_all, dest);
+				}
+			}
 			dest += size_of_all;
 		}
 		return buffer;

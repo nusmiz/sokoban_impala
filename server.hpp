@@ -290,7 +290,7 @@ private:
 		{
 			std::vector<TrainingData> datas;
 			datas.reserve(MAX_TRAINING_BATCH_SIZE);
-			std::vector<Observation> observations;
+			std::vector<std::optional<Observation>> observations;
 			observations.reserve(MAX_TRAINING_BATCH_SIZE * (T_MAX + 1));
 			while (true) {
 				datas.clear();
@@ -332,7 +332,7 @@ private:
 					for (auto& data : datas) {
 						if (i >= data.actions.size()) {
 							if (i >= data.observations.size()) {
-								observations.emplace_back(Observation{});
+								observations.emplace_back(std::nullopt);
 							} else {
 								observations.emplace_back(std::move(data.observations.at(i)));
 							}
@@ -351,7 +351,7 @@ private:
 					if (data.observations.size() >= T_MAX + 1) {
 						observations.emplace_back(std::move(data.observations.back()));
 					} else {
-						observations.emplace_back(Observation{});
+						observations.emplace_back(std::nullopt);
 					}
 				}
 

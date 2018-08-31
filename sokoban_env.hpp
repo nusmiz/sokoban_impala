@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <optional>
 #include <random>
 #include <tuple>
 #include <vector>
@@ -36,7 +37,6 @@ public:
 
 	using Observation = Tensor<CellState, ROOM_HEIGHT, ROOM_WIDTH>;
 	using ObsBatch = std::vector<float>;
-	using NetworkInput = boost::python::numpy::ndarray;
 	using Reward = float;
 	using Action = FourDirections;
 
@@ -51,15 +51,26 @@ public:
 	std::tuple<Observation, Reward, EnvState> step(const Action& action);
 	void render() const {}
 
-	template <class InputIterator,
+	template <class ForwardIterator,
 	    std::enable_if_t<
 	        std::conjunction_v<
-	            std::is_base_of<std::input_iterator_tag, typename std::iterator_traits<InputIterator>::iterator_category>,
-	            std::is_convertible<typename std::iterator_traits<InputIterator>::reference, const Observation&>>,
+	            std::is_base_of<std::forward_iterator_tag, typename std::iterator_traits<ForwardIterator>::iterator_category>,
+	            std::disjunction<
+	                std::is_convertible<typename std::iterator_traits<ForwardIterator>::reference, const Observation&>,
+	                std::is_convertible<typename std::iterator_traits<ForwardIterator>::reference, const std::optional<Observation>&>>>,
 	        std::nullptr_t> = nullptr>
-	static ObsBatch makeBatch(InputIterator first, InputIterator last)
+	static ObsBatch makeBatch(ForwardIterator first, ForwardIterator last)
 	{
-		return NdArrayTraits<float, 3, IMAGE_HEIGHT, IMAGE_WIDTH>::makeBufferForBatch(first, last, &SokobanEnv::writeData);
+		return NdArrayTraits<float, 3, IMAGE_HEIGHT, IMAGE_WIDTH>::makeBufferForBatch(first, last, [](const auto& obs, auto& dest) {
+			if constexpr (std::is_convertible_v<decltype(obs), const Observation&>) {
+				writeData(obs, dest);
+			} else {
+				const std::optional<Observation>& opt = obs;
+				if (opt.has_value()) {
+					writeData(opt.value(), dest);
+				}
+			}
+		});
 	}
 
 	static void loadProblems();
