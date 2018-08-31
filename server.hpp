@@ -115,7 +115,7 @@ public:
 				std::swap(m_prediction_batches, prediction_batches);
 			}
 			for (auto&& batch : training_batches) {
-				auto [v_loss, pi_loss, entropy_loss] = m_model.train(batch.states, batch.actions, batch.rewards, batch.policies, batch.data_sizes);
+				auto [v_loss, pi_loss, entropy_loss] = m_model.train(batch.states, batch.actions, batch.rewards, batch.policies, batch.data_sizes, batch.observation_sizes);
 				batch.trainer.get().processFinished();
 				average_v_loss = average_loss_decay * average_v_loss + (1.0 - average_loss_decay) * v_loss;
 				average_pi_loss = average_loss_decay * average_pi_loss + (1.0 - average_loss_decay) * pi_loss;
@@ -176,7 +176,8 @@ private:
 	};
 	struct TrainingBatch
 	{
-		std::array<std::int64_t, T_MAX + 1> data_sizes;
+		std::array<std::int64_t, T_MAX> data_sizes;
+		std::array<std::int64_t, T_MAX + 1> observation_sizes;
 		ObsBatch states;
 		std::vector<std::int64_t> actions;
 		std::vector<Reward> rewards;
@@ -287,14 +288,16 @@ private:
 
 		void run()
 		{
+			std::vector<TrainingData> datas;
+			datas.reserve(MAX_TRAINING_BATCH_SIZE);
+			std::vector<Observation> observations;
+			observations.reserve(MAX_TRAINING_BATCH_SIZE * (T_MAX + 1));
 			while (true) {
-				std::vector<TrainingData> datas;
-				datas.reserve(MAX_TRAINING_BATCH_SIZE);
-				std::vector<Observation> observations;
+				datas.clear();
+				observations.clear();
 				std::vector<std::int64_t> actions;
 				std::vector<Reward> rewards;
 				std::vector<float> policies;
-				observations.reserve(MAX_TRAINING_BATCH_SIZE * (T_MAX + 1));
 				actions.reserve(MAX_TRAINING_BATCH_SIZE * T_MAX);
 				rewards.reserve(MAX_TRAINING_BATCH_SIZE * T_MAX);
 				policies.reserve(MAX_TRAINING_BATCH_SIZE * T_MAX);
@@ -320,12 +323,19 @@ private:
 					m_server.get().m_trainer_event.notify_one();
 				}
 				std::sort(datas.begin(), datas.end(), [](const auto& a, const auto& b) {
-					return a.observations.size() > b.observations.size();
+					if (a.actions.size() == b.actions.size()) {
+						return a.observations.size() > b.observations.size();
+					}
+					return a.actions.size() > b.actions.size();
 				});
 				for (auto i : ranges::view::indices(T_MAX)) {
 					for (auto& data : datas) {
 						if (i >= data.actions.size()) {
-							observations.emplace_back(Observation{});
+							if (i >= data.observations.size()) {
+								observations.emplace_back(Observation{});
+							} else {
+								observations.emplace_back(std::move(data.observations.at(i)));
+							}
 							actions.emplace_back(0);
 							rewards.emplace_back(Reward{});
 							policies.emplace_back(0.0f);
@@ -345,12 +355,18 @@ private:
 					}
 				}
 
-				TrainingBatch batch{{}, Environment::makeBatch(observations.cbegin(), observations.cend()), std::move(actions), std::move(rewards), std::move(policies), *this};
+				TrainingBatch batch{{}, {}, Environment::makeBatch(observations.cbegin(), observations.cend()), std::move(actions), std::move(rewards), std::move(policies), *this};
+				for (auto i : ranges::view::indices(T_MAX)) {
+					auto it = std::upper_bound(datas.begin(), datas.end(), i + 1, [](std::size_t x, const auto& y) {
+						return x > y.actions.size();
+					});
+					batch.data_sizes.at(i) = it - datas.begin();
+				}
 				for (auto i : ranges::view::indices(T_MAX + 1)) {
 					auto it = std::upper_bound(datas.begin(), datas.end(), i + 1, [](std::size_t x, const auto& y) {
 						return x > y.observations.size();
 					});
-					batch.data_sizes.at(i) = it - datas.begin();
+					batch.observation_sizes.at(i) = it - datas.begin();
 				}
 				{
 					std::lock_guard lock{m_server.get().m_batches_lock};
@@ -459,7 +475,7 @@ private:
 					auto&& [next_obs, current_reward, status] = m_env.step(next_action);
 					++t;
 					sum_of_reward += current_reward;
-					if (status == EnvState::FINISHED || prev_obss.size() >= T_MAX) {
+					if (status == EnvState::FINISHED || prev_obss.size() >= T_MAX || (MAX_EPISODE_LENGTH.has_value() && t >= MAX_EPISODE_LENGTH.value())) {
 						assert(prev_obss.size() == prev_actions.size() && prev_obss.size() == prev_rewards.size());
 						TrainingData data;
 						std::optional<TrainingData> data2;

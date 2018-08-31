@@ -46,11 +46,12 @@ std::vector<std::tuple<std::int64_t, float>> Network::predict(ranges::span<typen
 	}
 }
 
-Network::Loss Network::train(ranges::span<typename StateTraits::value_type> states, ranges::span<std::int64_t> action_ids, ranges::span<Reward> rewards, ranges::span<float> behaviour_policies, ranges::span<std::int64_t> data_sizes)
+Network::Loss Network::train(ranges::span<typename StateTraits::value_type> states, ranges::span<std::int64_t> action_ids, ranges::span<Reward> rewards, ranges::span<float> behaviour_policies, ranges::span<std::int64_t> data_sizes, ranges::span<std::int64_t> observation_sizes)
 {
 	try {
 		namespace np = boost::python::numpy;
-		const auto t_max = static_cast<std::size_t>(data_sizes.size() - 1);
+		const auto t_max = static_cast<std::size_t>(data_sizes.size());
+		assert(data_sizes.size() + 1 == observation_sizes.size());
 		const auto batch_size = static_cast<std::size_t>(states.size()) / StateTraits::size_of_all / (t_max + 1);
 		assert(static_cast<std::size_t>(action_ids.size()) == batch_size * t_max && static_cast<std::size_t>(rewards.size()) == batch_size * t_max && static_cast<std::size_t>(behaviour_policies.size()) == batch_size * t_max);
 		auto states_ndarray = StateTraits::convertToBatchedNdArray(states, t_max + 1, batch_size);
@@ -61,7 +62,11 @@ Network::Loss Network::train(ranges::span<typename StateTraits::value_type> stat
 		for (auto&& s : data_sizes) {
 			data_sizes_list.append(s);
 		}
-		auto result = m_train_func(states_ndarray, action_ids_ndarray, rewards_ndarray, bp_ndarray, data_sizes_list);
+		boost::python::list observation_sizes_list;
+		for (auto&& s : observation_sizes) {
+			observation_sizes_list.append(s);
+		}
+		auto result = m_train_func(states_ndarray, action_ids_ndarray, rewards_ndarray, bp_ndarray, data_sizes_list, observation_sizes_list);
 		Loss loss;
 		loss.v_loss = boost::python::extract<double>(result[0]);
 		loss.pi_loss = boost::python::extract<double>(result[1]);

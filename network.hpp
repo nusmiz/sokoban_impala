@@ -24,13 +24,12 @@ public:
 		double entropy_loss;
 	};
 
-	using State = boost::python::numpy::ndarray;
 	using StateTraits = NdArrayTraits<float, 3, 80, 80>;
 	using Reward = float;
 
 	Network();
 	std::vector<std::tuple<std::int64_t, float>> predict(ranges::span<typename StateTraits::value_type> states);
-	Loss train(ranges::span<typename StateTraits::value_type> states, ranges::span<std::int64_t> action_ids, ranges::span<Reward> rewards, ranges::span<float> behaviour_policies, ranges::span<std::int64_t> data_sizes);
+	Loss train(ranges::span<typename StateTraits::value_type> states, ranges::span<std::int64_t> action_ids, ranges::span<Reward> rewards, ranges::span<float> behaviour_policies, ranges::span<std::int64_t> data_sizes, ranges::span<std::int64_t> observation_sizes);
 	void save(int index);
 
 private:

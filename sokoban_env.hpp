@@ -62,11 +62,6 @@ public:
 		return NdArrayTraits<float, 3, IMAGE_HEIGHT, IMAGE_WIDTH>::makeBufferForBatch(first, last, &SokobanEnv::writeData);
 	}
 
-	static NetworkInput batchToNetworkInput(ObsBatch& batch)
-	{
-		return NdArrayTraits<float, 3, IMAGE_HEIGHT, IMAGE_WIDTH>::convertToBatchedNdArray(batch);
-	}
-
 	static void loadProblems();
 
 private:

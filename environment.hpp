@@ -27,8 +27,7 @@ template <class T,
             std::is_same<std::tuple<typename T::Observation, typename T::Reward, EnvState>, decltype(std::declval<T&>().step(std::declval<typename T::Action>()))>,
             std::is_same<void, decltype(std::declval<const T&>().render())>,
             std::is_same<typename T::ObsBatch, decltype(T::makeBatch(std::declval<std::vector<typename T::Observation>&>().begin(), std::declval<std::vector<typename T::Observation>&>().end()))>,
-            std::is_same<typename T::ObsBatch, decltype(T::makeBatch(std::declval<std::vector<std::reference_wrapper<std::add_const_t<typename T::Observation>>>&>().begin(), std::declval<std::vector<std::reference_wrapper<std::add_const_t<typename T::Observation>>>&>().end()))>,
-            std::is_same<typename T::NetworkInput, decltype(T::batchToNetworkInput(std::declval<std::add_lvalue_reference_t<typename T::ObsBatch>>()))>>,
+            std::is_same<typename T::ObsBatch, decltype(T::makeBatch(std::declval<std::vector<std::reference_wrapper<std::add_const_t<typename T::Observation>>>&>().begin(), std::declval<std::vector<std::reference_wrapper<std::add_const_t<typename T::Observation>>>&>().end()))>>,
         std::nullptr_t> = nullptr>
 inline constexpr std::true_type isEnvironmentHelper(const volatile T*);
 
